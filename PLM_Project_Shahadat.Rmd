@@ -1,0 +1,228 @@
+---
+title: "Practical Machine Learning (coursera) Assignment"
+author: "Shahadat Hossain"
+date: "30 Dec 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE, fig.width=10, fig.height=5)
+options(width=120)
+
+library(caret)
+library(tidyverse)
+library(randomForest)
+
+library(doParallel)
+library(parallel)
+
+
+# Using 3 out of of 4 cores
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl, cores = detectCores() -1)
+
+trCtrl <- trainControl(method = "cv",
+                       number = 4,
+                       allowParallel = TRUE,
+                       verboseIter = TRUE)
+
+```
+### Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.Based on a dataset provide by HAR [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) we will try to train a predictive model.
+
+We'll take the following steps:
+
+- Explore and process the training data for the model(s)
+- Model Selection and examination to find out the best performing model
+- Predicting the test data based on the best fit model
+
+### Data Preparation
+#### Downloading data
+
+In the following, we will download datasets using the following links:
+
+- [Training data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+- [Testing data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+The following codes will download data using the links:
+```{r}
+# Downloading data 
+pml_training <- read.csv(file = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+pml_testing <- read.csv(file = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+
+# Dimension of training data
+tr_row <- dim(pml_training)[1]
+tr_col <- dim(pml_training)[2]
+
+```
+The raw training data has `r tr_row` rows and `r tr_col` columns. 
+
+#### Data cleaning
+We will use testing dataset for validation purpose. Thus, in the following we will split the training data as training and testing data.
+
+```{r}
+# Removing all the columns having atleast one missing value and all date/time/id related variables
+removeNA_df <- data.frame(na_count = colSums(is.na(pml_training) | pml_training == ""),
+                          n_row = nrow(pml_training))
+removeNA_df$var_names = rownames(removeNA_df)
+
+removeNA_cols <- removeNA_df %>% 
+  filter(na_count/n_row > 0) %>% 
+  .$var_names
+
+pml_trainingC <- pml_training %>% 
+  select(-c(removeNA_cols, grep("timestamp", names(.)), "X", "user_name")) %>% 
+  mutate(classe = as.factor(classe))
+
+# Finding and removing highly inter-crrelated variables
+classeIndex <- which(names(pml_trainingC) == "classe")
+
+corMatrix <- cor(data.frame(data.matrix(pml_trainingC[, -classeIndex])))
+highCor <- findCorrelation(corMatrix, cutoff = 0.9, exact = F)
+
+pml_trainingC <- pml_trainingC[,-highCor]
+
+# Removing columns with near zero variance
+pml_trainingC <- pml_trainingC[, -nearZeroVar(pml_trainingC)]
+
+trC_row <- dim(pml_trainingC)[1]
+trC_col <- dim(pml_trainingC)[2]
+
+```
+As a part of cleaning, the above codes removes all the variables that have at least one missing values. Later, we have removed all the variables that have more that 90% correlation with other variable(s). Finally, we have dropped variables having almost zero variance. All following all the steps the final cleaned training dataset has `r trC_row` rows and `r trC_col` columns.
+
+#### Partitioning data sets
+In the following, we have split the training raw datasets into another training data (have 70% of the observations) and testing data (having the rest 30% of the observations) using `caret` package.
+
+```{r}
+# Data partition
+
+inTrain <- createDataPartition(y = pml_trainingC$classe, p = 0.7, list = FALSE)
+training_pml <-pml_trainingC[inTrain, ]
+testing_pml <- pml_trainingC[-inTrain, ]
+```
+
+
+### Model selection
+Initially, we have identified the correlation among the explanatory `classe` variable with other explanatory variables from `training_pml` dataset. The following codes find out the correlations:
+
+```{r}
+bestCorr <- as.data.frame(as.table(cor(x = data.matrix(training_pml[,-classeIndex]), 
+                                       y = as.numeric(training_pml$classe)))) %>% 
+  filter(abs(Freq) > 0.3)
+bestCorr
+
+```
+We have found only `pitch_forearm` variable which has `corr > 0.3` with `classe` variable. In graph, we did not find the similar pattern.
+
+```{r}
+plot1 <- ggplot(training_pml) + 
+  geom_boxplot(aes(x = classe, y = pitch_forearm, fill = classe))
+plot1
+```
+
+#### Naive Bayes
+
+```{r}
+# Naive Bayes 
+modFit_nb <- train(classe ~ .,
+                   data = training_pml,
+                   method = "nb",
+                   trControl = trCtrl)
+
+pred_nb <- predict(modFit_nb, testing_pml)
+accuracy_nb <- confusionMatrix(pred_nb, testing_pml$classe)$overall['Accuracy']
+```
+The accuracy of _Naive Bayes_`_ models is : `r accuracy_nb`.
+
+#### Boosted Logistic Regression 
+
+```{r}
+# Boosted Logistic Regression 
+modFit_logbst <- train(classe ~ .,
+                   data = training_pml,
+                   method = "LogitBoost",
+                   trControl = trCtrl)
+
+pred_logbst <- predict(modFit_logbst, testing_pml)
+accuracy_logbst <- confusionMatrix(pred_logbst, testing_pml$classe)$overall['Accuracy']
+accuracy_logbst
+```
+The accuracy of _Boosted Logistic Regression_ models is : `r accuracy_logbst`.
+
+#### Stochastic Gradient Boosting
+
+```{r}
+# Stochastic Gradient Boosting 
+modFit_gbm <- train(classe ~ .,
+                       data = training_pml,
+                       method = "gbm",
+                       trControl = trCtrl)
+
+pred_gbm <- predict(modFit_gbm, testing_pml)
+accuracy_gbm <- confusionMatrix(pred_gbm, testing_pml$classe)$overall['Accuracy']
+accuracy_gbm
+```
+The accuracy of _Stochastic Gradient Boosting_ models is : `r accuracy_gbm`.
+
+#### CART
+
+```{r}
+# CART 
+modFit_rpart <- train(classe ~ .,
+                    data = training_pml,
+                    method = "rpart",
+                    trControl = trCtrl)
+
+pred_rpart <- predict(modFit_rpart, testing_pml)
+accuracy_rpart <- confusionMatrix(pred_rpart, testing_pml$classe)$overall['Accuracy']
+accuracy_rpart
+```
+The accuracy of _CART_ models is : `r accuracy_rpart`.
+
+#### Random Forest
+
+```{r}
+# Random Forest 
+modFit_rf <- train(classe ~ .,
+                    data = training_pml,
+                    method = "rf",
+                    trControl = trCtrl)
+
+pred_rf <- predict(modFit_rf, testing_pml)
+accuracy_rf <- confusionMatrix(pred_rf, testing_pml$classe)$overall['Accuracy']
+accuracy_rf
+```
+The accuracy of _Random Forest _ models is : `r accuracy_rf`.
+
+#### Model Performance
+The following graph shows the accuracy of each of the model.
+
+```{r}
+# Model Performance
+modPerf <- data.frame(ModelName = c("Naive Bayes", "Boosted Logistic Regression", 
+                                       "Stochastic Gradient Boosting", "CART", 
+                                       "Random Forest"),
+                      Accuracy = c(accuracy_nb, accuracy_logbst, accuracy_gbm, 
+                                   accuracy_rpart, accuracy_rf))
+
+plot2 <- ggplot(modPerf, aes(x = ModelName, y = Accuracy)) + 
+  geom_bar(stat = "identity", aes(fill = ModelName)) +
+  theme_bw() + theme(legend.position = "none")
+plot2
+```
+
+From the graph, _Random Forest_ is the best performing model, followed by Stochastic Gradient Boosting. Therefore, we will use Random Forest model for predicting from `plm_tesing` data.
+
+### Prediction
+```{r}
+predVal <- predict(modFit_rf, pml_testing)
+
+predVal_df <- data.frame(problem_id = paste0("Case: ",pml_testing$problem_id),
+           Prediction = predVal)
+
+predVal_df
+
+```
+
